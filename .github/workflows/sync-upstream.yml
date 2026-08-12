@@ -25,6 +25,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git merge upstream/main --no-edit || echo "Merge conflict, skipping"
 
+      - name: Restore worker name to 'test'
+        run: |
+          sed -i 's/^name = .*/name = "test"/' wrangler.toml
+          git add wrangler.toml
+          git diff --cached --quiet || git commit -m "chore: restore worker name to 'test'"
+
       - name: Push changes
         run: |
           git push origin main
