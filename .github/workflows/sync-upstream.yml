@@ -5,6 +5,9 @@ on:
     - cron: '0 2 * * *'  # 每天凌晨 2 点自动同步
   workflow_dispatch:  # 允许手动触发
 
+permissions:
+  contents: write  # 需要写权限才能 push
+
 jobs:
   sync:
     runs-on: ubuntu-latest
