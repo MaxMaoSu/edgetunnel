@@ -1,41 +1,47 @@
-name: Sync Upstream
+name: Sync Upstream and Restore Worker Name
+
+permissions:
+  contents: write
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 每天凌晨 2 点自动同步
+    - cron: "0 2 * * *"  # 每天凌晨 2 点自动同步
   workflow_dispatch:  # 允许手动触发
 
-permissions:
-  contents: write  # 需要写权限才能 push
-
 jobs:
-  sync:
+  sync_and_restore:
+    name: Sync from upstream and restore worker name
     runs-on: ubuntu-latest
+    if: ${{ github.event.repository.fork }}
+
     steps:
-      - name: Checkout fork
+      - name: Checkout target repo
         uses: actions/checkout@v4
+
+      - name: Sync upstream changes
+        id: sync
+        uses: aormsby/fork-sync-with-upstream-action@v3.4.3
         with:
-          fetch-depth: 0
+          upstream_sync_repo: cmliu/edgetunnel
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          test_mode: false
 
-      - name: Add upstream remote
-        run: |
-          git remote add upstream https://github.com/cmliu/edgetunnel.git || true
-          git fetch upstream
-
-      - name: Merge upstream changes
+      - name: Restore worker name to 'test'
+        if: steps.sync.outputs.has_new_commits == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git merge upstream/main --no-edit || echo "Merge conflict, skipping"
-
-      - name: Restore worker name to 'test'
-        run: |
           sed -i 's/^name = .*/name = "test"/' wrangler.toml
           git add wrangler.toml
-          git diff --cached --quiet || git commit -m "chore: restore worker name to 'test'"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: restore worker name to 'test' after upstream sync"
+            git push origin main
+          fi
 
-      - name: Push changes
+      - name: Sync check
+        if: failure()
         run: |
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "[Error] Sync failed. You may need to manually resolve conflicts."
+          exit 1
