@@ -28,15 +28,32 @@ jobs:
           target_repo_token: ${{ secrets.GITHUB_TOKEN }}
           test_mode: false
 
-      - name: Restore worker name to 'test'
+      - name: Restore worker name and enable cache
         if: steps.sync.outputs.has_new_commits == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          sed -i 's/^name = .*/name = "test"/' wrangler.toml
+          python - <<'PYEOF'
+import re
+
+with open('wrangler.toml', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# 1) 恢复 worker 名称
+content = re.sub(r'^name\s*=.*$', 'name = "test"', content, count=1, flags=re.M)
+
+# 2) 确保 [cache] enabled = true 存在(若已存在则保持/修正,不存在则追加)
+if '[cache]' not in content:
+    content += '\n[cache]\nenabled = true\n'
+else:
+    content = re.sub(r'(?ms)^\[cache\].*?^(?=\S|\Z)', '[cache]\nenabled = true\n', content, count=1)
+
+with open('wrangler.toml', 'w', encoding='utf-8') as f:
+    f.write(content)
+PYEOF
           git add wrangler.toml
           if ! git diff --cached --quiet; then
-            git commit -m "chore: restore worker name to 'test' after upstream sync"
+            git commit -m "chore: restore worker name 'test' and enable cache after upstream sync"
             git push origin main
           fi
 
