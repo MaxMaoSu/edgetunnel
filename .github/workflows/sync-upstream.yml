@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # 每天凌晨 2 点自动同步
+    - cron: "0 18 * * *"  # 每天北京时间凌晨 2 点 (UTC 18:00)
   workflow_dispatch:  # 允许手动触发
 
 jobs:
