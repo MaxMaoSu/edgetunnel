@@ -28,28 +28,124 @@ jobs:
           target_repo_token: ${{ secrets.GITHUB_TOKEN }}
           test_mode: false
 
-      - name: Restore worker name and enable cache
+      - name: Restore local wrangler.toml overrides
         if: steps.sync.outputs.has_new_commits == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           python - <<'PYEOF'
           import re
+          import sys
+          import tomllib
 
           with open('wrangler.toml', 'r', encoding='utf-8') as f:
-              content = f.read()
+              lines = f.read().split('\n')
 
-          # 1) 恢复 worker 名称
-          content = re.sub(r'^name\s*=.*$', 'name = "test"', content, count=1, flags=re.M)
+          # 只操作顶层区域(第一个表头之前)和 [cache] 表;其余键/表/注释/数组表一律原样保留。
+          first_hdr = next((i for i, l in enumerate(lines) if re.match(r'^\s*\[', l)), len(lines))
+          top, rest = lines[:first_hdr], lines[first_hdr:]
 
-          # 2) 确保 [cache] enabled = true 存在(若已存在则保持/修正,不存在则追加)
-          if '[cache]' not in content:
-              content += '\n[cache]\nenabled = true\n'
+
+          def set_key(blob, key, value):
+              # 顶层强制项:第一个出现位置改写为本地值,其余重复同名 key 全部丢弃(TOML 不允许重复定义)
+              pat = re.compile(r'^\s*' + re.escape(key) + r'\s*=')
+              out, found = [], False
+              for l in blob:
+                  if pat.match(l):
+                      if not found:
+                          out.append(key + ' = ' + value)
+                          found = True
+                  else:
+                      out.append(l)
+              if not found:
+                  out.append(key + ' = ' + value)
+              return out
+
+
+          top = set_key(top, 'name', '"test"')
+          top = set_key(top, 'keep_vars', 'true')
+          lines = top + rest
+
+          # [cache]:合并重复表头、只改写 enabled 一个键,表内其他键(如 cache_tier)保留
+          hdr = re.compile(r'^\s*\[cache\](\s*(#.*)?)?$')
+          idx = [i for i, l in enumerate(lines) if hdr.match(l)]
+
+          if not idx:
+              lines += ['', '[cache]', 'enabled = true']
           else:
-              content = re.sub(r'(?ms)^\[cache\].*?^(?=\S|\Z)', '[cache]\nenabled = true\n', content, count=1)
+              first = idx[0]
+              end = len(lines)
+              for j in range(first + 1, len(lines)):
+                  if re.match(r'^\s*\[', lines[j]) and not hdr.match(lines[j]):
+                      end = j
+                      break
+              block_out, seen = [lines[first]], False
+              for l in lines[first + 1:end]:
+                  if hdr.match(l):                       # 丢弃重复的 [cache] 表头,并入第一个表
+                      continue
+                  if re.match(r'^\s*enabled\s*=', l):    # enabled 只保留一份且强制 true
+                      if not seen:
+                          block_out.append('enabled = true')
+                          seen = True
+                      continue
+                  block_out.append(l)
+              if not seen:
+                  block_out.insert(1, 'enabled = true')
+              lines = lines[:first] + block_out + lines[end:]
+
+          # [kv_namespaces]:本地 KV 绑定为强制项;其他 binding 条目/注释一律原样保留
+          KV_ID = 'c4ab8825b854451cb4a73762bb3d46c0'
+          kv_hdr = re.compile(r'^\s*\[\[\s*kv_namespaces\s*\]\](\s*(#.*)?)?$')
+          nidx = [i for i, l in enumerate(lines) if kv_hdr.match(l)]
+
+          if not nidx:
+              lines += ['', '[[kv_namespaces]]', 'binding = "KV"', 'id = "' + KV_ID + '"']
+          else:
+              bnd = [i for i, l in enumerate(lines) if re.match(r'^\s*\[', l)]
+              ends = [next((b for b in bnd if b > pos), len(lines)) for pos in nidx]
+              folded, seen_ours = [], False
+              for pos, end in zip(nidx, ends):
+                  raw = list(lines[pos:end])
+                  bind_val = None
+                  for l in raw:
+                      m = re.match(r'^\s*binding\s*=\s*"([^"]*)"', l)
+                      if m:
+                          bind_val = m.group(1)
+                          break
+                  if bind_val == 'KV':
+                      if seen_ours:          # 同名 binding 重复 → 只保留一条
+                          continue
+                      seen_ours = True
+                      block = set_key(raw, 'binding', '"KV"')
+                      block = set_key(block, 'id', '"' + KV_ID + '"')
+                  else:
+                      block = raw           # 其他 binding 的条目原样保留
+                  folded.append(block)
+              if not seen_ours:
+                  lines += ['', '[[kv_namespaces]]', 'binding = "KV"', 'id = "' + KV_ID + '"']
+              else:
+                  # 注意:块自带尾部空行,不要再插入分隔空行,否则每次运行都会多出空行(不幂等)
+                  region = [l for block in folded for l in block]
+                  lines = lines[:nidx[0]] + region + lines[ends[-1]:]
+
+          content = '\n'.join(lines).rstrip('\n') + '\n'
+
+          # 兜底校验:TOML 无效或强制项未生效时直接失败,绝不推送坏文件
+          try:
+              data = tomllib.loads(content)
+          except Exception as e:
+              print('[Error] restore produced invalid TOML:', e)
+              sys.exit(1)
+          kv_binds = [k for k in data.get('kv_namespaces', []) if k.get('binding') == 'KV']
+          if (data.get('name') != 'test' or data.get('keep_vars') is not True
+                  or data.get('cache', {}).get('enabled') is not True
+                  or not kv_binds or kv_binds[0].get('id') != KV_ID):
+              print('[Error] local overrides (name/keep_vars/cache.enabled/kv) did not take effect')
+              sys.exit(1)
 
           with open('wrangler.toml', 'w', encoding='utf-8') as f:
               f.write(content)
+          print('[OK] wrangler.toml restored; all other upstream params preserved')
           PYEOF
           git add wrangler.toml
           if ! git diff --cached --quiet; then

@@ -5,7 +5,6 @@ keep_vars = true
 
 [cache]
 enabled = true
-enabled = true
 
 [[kv_namespaces]]
 binding = "KV"
