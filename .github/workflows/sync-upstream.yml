@@ -25,7 +25,7 @@ jobs:
           upstream_sync_repo: cmliu/edgetunnel
           upstream_sync_branch: main
           target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          target_repo_token: ${{ secrets.PAT }} # GITHUB_TOKEN 无 workflows 权限，推送含 .github/workflows 变更时会被 GitHub 拒绝，需用带 Workflows 权限的 PAT
           test_mode: false
 
       - name: Restore local wrangler.toml overrides
