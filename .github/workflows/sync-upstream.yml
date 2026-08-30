@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false # 否则 checkout 注入的 http.extraheader(GITHUB_TOKEN) 会覆盖 fork-sync 拼进 URL 的 PAT
 
       - name: Sync upstream changes
         id: sync
